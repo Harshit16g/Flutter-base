@@ -1,0 +1,16 @@
+
+  # State Management
+  provider: ^6.0.0
+  get_it: ^7.2.0
+
+  # Storage
+  shared_preferences: ^2.0.0
+  flutter_secure_storage: ^8.0.0
+
+  # Networking
+  dio: ^5.0.0
+  ftpconnect: ^2.0.0
+
+  # Utils
+  logger: ^1.1.0
+  intl: ^0.18.0
