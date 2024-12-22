@@ -3,15 +3,29 @@
 import 'package:get_it/get_it.dart';
 import 'package:injectable/injectable.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:meta/meta.dart';
-import '../network/dio/interceptors/interceptors.dart';
-import '../storage/local_storage_service.dart';
+
+// Core imports
 import '../network/api_client.dart';
-import '../network/ftp_service.dart';
-import '../services/firebase_service.dart';
-import '../services/analytics_service.dart';
+import '../network/network_info.dart';
+import '../storage/secure_storage_service.dart';
 import '../utils/logger_service.dart';
 import '../config/env_config.dart';
+
+// Network interceptors
+import '../network/dio/interceptors/auth_interceptor.dart';
+import '../network/dio/interceptors/error_interceptor.dart';
+import '../network/dio/interceptors/logging_interceptor.dart';
+import '../network/dio/interceptors/retry_interceptor.dart';
+
+// Features imports
+import '../../features/auth/data/datasources/auth_remote_datasource.dart';
+import '../../features/auth/data/repositories/auth_repository_impl.dart';
+import '../../features/auth/domain/repositories/auth_repository.dart';
+import '../../features/auth/domain/usecases/get_current_user.dart';
+import '../../features/auth/domain/usecases/login.dart';
+import '../../features/auth/domain/usecases/logout.dart';
+import '../../features/auth/domain/usecases/register.dart';
+import '../../features/auth/domain/usecases/refresh_token.dart';
 
 final GetIt locator = GetIt.instance;
 
@@ -20,10 +34,11 @@ final GetIt locator = GetIt.instance;
   preferRelativeImports: true,
   asExtension: false,
 )
-@singleton
+void configureDependencies() => initGetIt(locator);
+
 class ServiceLocator {
   static bool _isInitialized = false;
-  static final _logger = LoggerService(EnvConfigFactory.getConfig());
+  static late final LoggerService _logger;
 
   static Future<void> init() async {
     if (_isInitialized) {
@@ -32,9 +47,9 @@ class ServiceLocator {
     }
 
     try {
-      _logger.info('Initializing ServiceLocator');
-
-      await _registerDependencies();
+      await _registerCore();
+      await _registerNetwork();
+      await _registerAuth();
       await _validateRegistrations();
       await _initializeServices();
 
@@ -50,30 +65,20 @@ class ServiceLocator {
     }
   }
 
-  static Future<void> _registerDependencies() async {
-    await _registerCore();
-    await _registerServices();
-    await _registerNetworking();
-  }
-
   static Future<void> _registerCore() async {
     try {
-      // Register synchronous dependencies first
-      locator.registerSingleton<EnvConfig>(EnvConfigFactory.getConfig());
+      final config = EnvConfigFactory.getConfig();
+      locator.registerSingleton<EnvConfig>(config);
+
+      _logger = LoggerService(config: config);
       locator.registerSingleton<LoggerService>(_logger);
 
-      // Register asynchronous dependencies
+      locator.registerSingleton<SecureStorageService>(
+        SecureStorageService(),
+      );
+
       final sharedPrefs = await SharedPreferences.getInstance();
       locator.registerSingleton<SharedPreferences>(sharedPrefs);
-
-      // Register services that depend on core dependencies
-      locator.registerLazySingleton<LocalStorageService>(
-            () => LocalStorageService(
-          preferences: locator<SharedPreferences>(),
-          config: locator<EnvConfig>(),
-          logger: locator<LoggerService>(),
-        ),
-      );
 
       _logger.info('Core dependencies registered successfully');
     } catch (e, stackTrace) {
@@ -86,37 +91,52 @@ class ServiceLocator {
     }
   }
 
-  static Future<void> _registerNetworking() async {
+  static Future<void> _registerNetwork() async {
     try {
-      // Register interceptors
-      locator.registerLazySingleton<DioInterceptors>(
-            () => DioInterceptors(
+      locator.registerLazySingleton<NetworkInfo>(
+            () => NetworkInfoImpl(logger: locator<LoggerService>()), // Ensure correct argument passed
+      );
+
+      locator.registerLazySingleton<AuthInterceptor>(
+            () => AuthInterceptor(
+          secureStorage: locator<SecureStorageService>(),
           logger: locator<LoggerService>(),
-          config: locator<EnvConfig>(),
-          storage: locator<LocalStorageService>(),
         ),
       );
 
-      // Register networking clients
+      locator.registerLazySingleton<ErrorInterceptor>(
+            () => ErrorInterceptor(
+          logger: locator<LoggerService>(),
+        ),
+      );
+
+      locator.registerLazySingleton<LoggingInterceptor>(
+            () => LoggingInterceptor(
+          logger: locator<LoggerService>(),
+        ),
+      );
+
+      locator.registerLazySingleton<RetryInterceptor>(
+            () => RetryInterceptor(
+          logger: locator<LoggerService>(),
+        ),
+      );
+
       locator.registerLazySingleton<ApiClient>(
             () => ApiClient(
-          config: locator<EnvConfig>(),
-          logger: locator<LoggerService>(),
-          interceptors: locator<DioInterceptors>(),
+          locator<EnvConfig>(),
+          locator<AuthInterceptor>(),
+          locator<ErrorInterceptor>(),
+          locator<LoggingInterceptor>(),
+          locator<RetryInterceptor>(),
+          locator<LoggerService>(),
         ),
       );
 
-      locator.registerLazySingleton<FtpService>(
-            () => FtpService(
-          config: locator<EnvConfig>(),
-          logger: locator<LoggerService>(),
-        ),
-      );
-
-      _logger.info('Networking dependencies registered successfully');
+      _logger.info('Network dependencies registered successfully');
     } catch (e, stackTrace) {
       _logger.error(
-        'Failed to register networking dependencies',
+        'Failed to register network dependencies',
         error: e,
         stackTrace: stackTrace,
       );
@@ -124,29 +144,40 @@ class ServiceLocator {
     }
   }
 
-  static Future<void> _registerServices() async {
+  static Future<void> _registerAuth() async {
     try {
-      // Register analytics first as other services might depend on it
-      locator.registerLazySingleton<AnalyticsService>(
-            () => AnalyticsService(
-          config: locator<EnvConfig>(),
-          logger: locator<LoggerService>(),
+      locator.registerLazySingleton<IAuthRemoteDataSource>(
+            () => AuthRemoteDataSource(locator<ApiClient>()),
+      );
+
+      locator.registerLazySingleton<IAuthRepository>(
+            () => AuthRepositoryImpl(
+          locator<IAuthRemoteDataSource>(),
+          locator<NetworkInfo>(),
+          locator<SecureStorageService>(),
         ),
       );
 
-      // Register services that depend on analytics
-      locator.registerLazySingleton<FirebaseService>(
-            () => FirebaseService(
-          config: locator<EnvConfig>(),
-          logger: locator<LoggerService>(),
-          analytics: locator<AnalyticsService>(),
-        ),
+      locator.registerLazySingleton(
+            () => Login(locator<IAuthRepository>()),
+      );
+      locator.registerLazySingleton(
+            () => Register(locator<IAuthRepository>()),
+      );
+      locator.registerLazySingleton(
+            () => Logout(locator<IAuthRepository>()),
+      );
+      locator.registerLazySingleton(
+            () => GetCurrentUser(locator<IAuthRepository>()),
+      );
+      locator.registerLazySingleton(
+            () => RefreshToken(locator<IAuthRepository>()),
       );
 
-      _logger.info('Services registered successfully');
+      _logger.info('Auth dependencies registered successfully');
     } catch (e, stackTrace) {
       _logger.error(
-        'Failed to register services',
+        'Failed to register auth dependencies',
         error: e,
         stackTrace: stackTrace,
       );
@@ -155,23 +186,22 @@ class ServiceLocator {
   }
 
   static Future<void> _validateRegistrations() async {
-    final requiredServices = <Type, String>{
-      SharedPreferences: 'SharedPreferences',
-      EnvConfig: 'EnvConfig',
-      LoggerService: 'LoggerService',
-      LocalStorageService: 'LocalStorageService',
-      DioInterceptors: 'DioInterceptors',
-      ApiClient: 'ApiClient',
-      FtpService: 'FtpService',
-      AnalyticsService: 'AnalyticsService',
-      FirebaseService: 'FirebaseService',
-    };
+    final requiredServices = <Type>[
+      EnvConfig,
+      LoggerService,
+      SecureStorageService,
+      SharedPreferences,
+      NetworkInfo,
+      ApiClient,
+      IAuthRemoteDataSource,
+      IAuthRepository,
+    ];
 
     try {
-      for (final entry in requiredServices.entries) {
-        if (!locator.isRegistered<Object>(type: entry.key)) {
+      for (final type in requiredServices) {
+        if (!locator.isRegistered<Object>(instanceName: type.toString())) {
           throw ServiceLocatorException(
-            'Required service ${entry.value} is not registered',
+            'Required service $type is not registered',
           );
         }
       }
@@ -190,13 +220,10 @@ class ServiceLocator {
     try {
       _logger.info('Starting service initialization');
 
-      // Initialize services that require async initialization
-      await Future.wait([
-        _initializeFirebase(),
-        _initializeFtp(),
-        _initializeApi(),
-        _initializeAnalytics(),
-      ], eagerError: true);
+      final isApiConnected = await locator<ApiClient>().checkConnection();
+      if (!isApiConnected) {
+        throw ServiceLocatorException('API health check failed');
+      }
 
       _logger.info('All services initialized successfully');
     } catch (e, stackTrace) {
@@ -209,70 +236,11 @@ class ServiceLocator {
     }
   }
 
-  static Future<void> _initializeFirebase() async {
-    try {
-      await locator<FirebaseService>().initialize();
-      _logger.info('Firebase initialized successfully');
-    } catch (e, stackTrace) {
-      _logger.error(
-        'Firebase initialization failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
-      rethrow;
-    }
-  }
-
-  static Future<void> _initializeFtp() async {
-    try {
-      await locator<FtpService>().checkConnection();
-      _logger.info('FTP connection verified');
-    } catch (e, stackTrace) {
-      _logger.error(
-        'FTP connection check failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
-      rethrow;
-    }
-  }
-
-  static Future<void> _initializeApi() async {
-    try {
-      final isConnected = await locator<ApiClient>().checkConnection();
-      if (!isConnected) {
-        throw ServiceLocatorException('API health check failed');
-      }
-      _logger.info('API connection verified');
-    } catch (e, stackTrace) {
-      _logger.error(
-        'API connection check failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
-      rethrow;
-    }
-  }
-
-  static Future<void> _initializeAnalytics() async {
-    try {
-      await locator<AnalyticsService>().initialize();
-      _logger.info('Analytics initialized successfully');
-    } catch (e, stackTrace) {
-      _logger.error(
-        'Analytics initialization failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
-      rethrow;
-    }
-  }
-
   @visibleForTesting
   static Future<void> reset() async {
     try {
       _logger.info('Resetting ServiceLocator');
-      locator.reset();
+      await locator.reset();
       _isInitialized = false;
       _logger.info('ServiceLocator reset successfully');
     } catch (e, stackTrace) {

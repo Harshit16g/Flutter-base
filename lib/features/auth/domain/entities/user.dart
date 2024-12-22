@@ -3,18 +3,24 @@ import 'package:equatable/equatable.dart';
 class User extends Equatable {
   final String id;
   final String email;
-  final String displayName;
+  final String? displayName;
   final String? photoUrl;
-  final DateTime createdAt;
+  final bool isEmailVerified;
 
   const User({
     required this.id,
     required this.email,
-    required this.displayName,
+    this.displayName,
     this.photoUrl,
-    required this.createdAt,
+    this.isEmailVerified = false,
   });
 
   @override
-  List<Object?> get props => [id, email, displayName, photoUrl, createdAt];
+  List<Object?> get props => [
+    id,
+    email,
+    displayName,
+    photoUrl,
+    isEmailVerified,
+  ];
 }

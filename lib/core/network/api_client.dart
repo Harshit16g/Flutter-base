@@ -1,5 +1,36 @@
 // lib/core/network/api_client.dart
-
+//USAGE////
+//// Example usage
+//// Example usage
+// final apiClient = getIt<ApiClient>();
+//
+// // Basic request with default options
+// final response = await apiClient.get('/users');
+//
+// // Request with custom options
+// final customResponse = await apiClient.get(
+//   '/users',
+//   options: ApiOptions(
+//     headers: {'Custom-Header': 'value'},
+//     responseType: ResponseType.json,
+//     priority: RequestPriority.high,
+//     maxRetries: 3,
+//   ),
+// );
+//
+// // Cached request
+// final cachedResponse = await apiClient.get(
+//   '/users',
+//   options: apiClient.getCachedOptions(
+//     maxAge: Duration(minutes: 10),
+//   ),
+// );
+//
+// // High priority request
+// final priorityResponse = await apiClient.get(
+//   '/important-endpoint',
+//   options: apiClient.getPriorityOptions(RequestPriority.high),
+// );
 import 'package:dio/dio.dart';
 import 'package:injectable/injectable.dart';
 import '../config/env_config.dart';
@@ -9,6 +40,7 @@ import 'dio/interceptors/error_interceptor.dart';
 import 'dio/interceptors/logging_interceptor.dart';
 import 'dio/interceptors/retry_interceptor.dart';
 import '../utils/logger_service.dart';
+import 'api_options.dart';
 
 @singleton
 class ApiClient {
@@ -38,6 +70,7 @@ class ApiClient {
         connectTimeout: const Duration(seconds: ApiConstants.connectionTimeout),
         receiveTimeout: const Duration(seconds: ApiConstants.receiveTimeout),
         sendTimeout: const Duration(seconds: ApiConstants.sendTimeout),
+        headers: getDefaultHeaders(),
       ),
     );
 
@@ -54,10 +87,17 @@ class ApiClient {
     });
   }
 
+  Map<String, String> getDefaultHeaders() {
+    return {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+  }
+  // HTTP Methods
   Future<Response<T>> get<T>(
       String path, {
         Map<String, dynamic>? queryParameters,
-        Options? options,
+        ApiOptions? options,
         CancelToken? cancelToken,
         ProgressCallback? onReceiveProgress,
       }) async {
@@ -65,12 +105,13 @@ class ApiClient {
       _logger.debug('Making GET request', error: {
         'path': path,
         'queryParameters': queryParameters,
+        'options': options?.headers,
       });
 
       final response = await _dio.get<T>(
         path,
         queryParameters: queryParameters,
-        options: options,
+        options: options?.toDioOptions(),
         cancelToken: cancelToken,
         onReceiveProgress: onReceiveProgress,
       );
@@ -82,11 +123,7 @@ class ApiClient {
 
       return response;
     } catch (e, stackTrace) {
-      _logger.error(
-        'GET request failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      _logger.error('GET request failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
@@ -95,7 +132,7 @@ class ApiClient {
       String path, {
         dynamic data,
         Map<String, dynamic>? queryParameters,
-        Options? options,
+        ApiOptions? options,
         CancelToken? cancelToken,
         ProgressCallback? onSendProgress,
         ProgressCallback? onReceiveProgress,
@@ -105,13 +142,14 @@ class ApiClient {
         'path': path,
         'data': data,
         'queryParameters': queryParameters,
+        'options': options?.headers,
       });
 
       final response = await _dio.post<T>(
         path,
         data: data,
         queryParameters: queryParameters,
-        options: options,
+        options: options?.toDioOptions(),
         cancelToken: cancelToken,
         onSendProgress: onSendProgress,
         onReceiveProgress: onReceiveProgress,
@@ -124,93 +162,35 @@ class ApiClient {
 
       return response;
     } catch (e, stackTrace) {
-      _logger.error(
-        'POST request failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
+      _logger.error('POST request failed', error: e, stackTrace: stackTrace);
       rethrow;
     }
   }
-
-  Future<Response<T>> put<T>(
-      String path, {
-        dynamic data,
-        Map<String, dynamic>? queryParameters,
-        Options? options,
-        CancelToken? cancelToken,
-        ProgressCallback? onSendProgress,
-        ProgressCallback? onReceiveProgress,
-      }) async {
-    try {
-      _logger.debug('Making PUT request', error: {
-        'path': path,
-        'data': data,
-        'queryParameters': queryParameters,
-      });
-
-      final response = await _dio.put<T>(
-        path,
-        data: data,
-        queryParameters: queryParameters,
-        options: options,
-        cancelToken: cancelToken,
-        onSendProgress: onSendProgress,
-        onReceiveProgress: onReceiveProgress,
-      );
-
-      _logger.info('PUT request successful', error: {
-        'path': path,
-        'statusCode': response.statusCode,
-      });
-
-      return response;
-    } catch (e, stackTrace) {
-      _logger.error(
-        'PUT request failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
-      rethrow;
-    }
+  // Utility methods for ApiOptions
+  ApiOptions getDefaultOptions() {
+    return ApiOptions(
+      headers: getDefaultHeaders(),
+      contentType: 'application/json',
+      responseType: ResponseType.json,
+      connectTimeout: Duration(seconds: ApiConstants.connectionTimeout),
+      receiveTimeout: Duration(seconds: ApiConstants.receiveTimeout),
+      sendTimeout: Duration(seconds: ApiConstants.sendTimeout),
+      maxRetries: 3,
+      retryInterval: const Duration(seconds: 1),
+    );
   }
 
-  Future<Response<T>> delete<T>(
-      String path, {
-        dynamic data,
-        Map<String, dynamic>? queryParameters,
-        Options? options,
-        CancelToken? cancelToken,
-      }) async {
-    try {
-      _logger.debug('Making DELETE request', error: {
-        'path': path,
-        'data': data,
-        'queryParameters': queryParameters,
-      });
+  ApiOptions getCachedOptions({Duration? maxAge}) {
+    return getDefaultOptions().copyWith(
+      cacheMaxAge: maxAge ?? const Duration(minutes: 5),
+      forceRefresh: false,
+    );
+  }
 
-      final response = await _dio.delete<T>(
-        path,
-        data: data,
-        queryParameters: queryParameters,
-        options: options,
-        cancelToken: cancelToken,
-      );
-
-      _logger.info('DELETE request successful', error: {
-        'path': path,
-        'statusCode': response.statusCode,
-      });
-
-      return response;
-    } catch (e, stackTrace) {
-      _logger.error(
-        'DELETE request failed',
-        error: e,
-        stackTrace: stackTrace,
-      );
-      rethrow;
-    }
+  ApiOptions getPriorityOptions(RequestPriority priority) {
+    return getDefaultOptions().copyWith(
+      priority: priority,
+    );
   }
 
   void updateBaseUrl(String newBaseUrl) {
@@ -218,29 +198,25 @@ class ApiClient {
     _logger.info('Base URL updated', error: {'newBaseUrl': newBaseUrl});
   }
 
-  void addHeader(String key, String value) {
-    _dio.options.headers[key] = value;
-    _logger.debug('Header added', error: {'key': key, 'value': value});
-  }
-
-  void removeHeader(String key) {
-    _dio.options.headers.remove(key);
-    _logger.debug('Header removed', error: {'key': key});
-  }
-
   void setAuthToken(String token) {
-    addHeader('Authorization', 'Bearer $token');
+    _dio.options.headers['Authorization'] = 'Bearer $token';
     _logger.info('Auth token set');
   }
 
   void clearAuthToken() {
-    removeHeader('Authorization');
+    _dio.options.headers.remove('Authorization');
     _logger.info('Auth token cleared');
   }
 
   Future<bool> checkConnection() async {
     try {
-      final response = await get('/health');
+      final response = await get(
+        '/health',
+        options: getDefaultOptions().copyWith(
+          priority: RequestPriority.high,
+          maxRetries: 1,
+        ),
+      );
       return response.statusCode == 200;
     } catch (e) {
       _logger.error('Health check failed', error: e);
