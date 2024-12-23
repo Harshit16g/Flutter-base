@@ -1,0 +1,6 @@
+{
+    "name": "Application-0",
+    "provider_region": "aws-us-west-2",
+    "deployment_model": "GLOBAL",
+    "environment": "development"
+}
